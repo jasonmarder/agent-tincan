@@ -164,17 +164,22 @@ type grokWakes struct {
 
 // wakes reads every <name>.wake-sessions list and <name>.wake home in
 // WakeDir. A missing directory or list means no wakes.
-func (g *GrokCLI) wakes() grokWakes {
+func (g *GrokCLI) wakes() grokWakes { return readWakes(g.WakeDir) }
+
+// readWakes reads every <name>.wake-sessions list and <name>.wake home in
+// dir, whichever command-woken CLI wrote them. A missing directory or list
+// means no wakes.
+func readWakes(dir string) grokWakes {
 	w := grokWakes{ids: map[string]bool{}}
-	if g.WakeDir == "" {
+	if dir == "" {
 		return w
 	}
-	entries, err := os.ReadDir(g.WakeDir)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return w
 	}
 	for _, e := range entries {
-		p := filepath.Join(g.WakeDir, e.Name())
+		p := filepath.Join(dir, e.Name())
 		switch {
 		case e.IsDir() && strings.HasSuffix(e.Name(), grokWakeHome):
 			w.dirs = append(w.dirs, p)
@@ -214,13 +219,22 @@ func (w grokWakes) automated(e grokEntry) bool {
 	if w.ids[e.id] || e.summary.SandboxProfile == GrokWakeSandboxProfile {
 		return true
 	}
-	for _, d := range w.dirs {
-		if inDirResolved(e.cwd, d) {
-			return true
-		}
+	if w.inWakeDir(e.cwd) {
+		return true
 	}
 	for _, h := range w.homes {
 		if e.summary.GrokHome != "" && inDirResolved(e.summary.GrokHome, h) {
+			return true
+		}
+	}
+	return false
+}
+
+// inWakeDir reports whether cwd is a wake's working directory or inside a
+// wake home.
+func (w grokWakes) inWakeDir(cwd string) bool {
+	for _, d := range w.dirs {
+		if inDirResolved(cwd, d) {
 			return true
 		}
 	}

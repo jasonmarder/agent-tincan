@@ -122,7 +122,7 @@ var defaultWake = map[string]string{
 // Service kinds and product-tool kinds have one; hosting shapes, Hermes and
 // OpenClaw do not, because the owner decides what runs there.
 var stockGoodAt = map[string]string{
-	KindHistory:       "finds the owner's past ChatGPT, claude.ai, Grok, Gemini, Copilot, Codex, Claude Code and Grok CLI chats and images",
+	KindHistory:       "chats, images: ChatGPT, claude.ai, Grok, Gemini, Copilot, Codex, Claude Code, Cursor, OpenCode, Gemini/Copilot/Grok CLI",
 	KindNotes:         "saves, searches and reads the owner's Agent Notes on their Mac; never edits or deletes one",
 	KindCouncil:       "asks web, CLI and webhook agents (not Claude Code) one question, ranks answers blind; slow, held for approval by default",
 	KindChatGPTWeb:    "asks ChatGPT (chatgpt.com) in the owner's browser and replies with the answer and any images ChatGPT made",
