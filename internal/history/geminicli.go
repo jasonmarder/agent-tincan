@@ -83,7 +83,8 @@ func (g *GeminiCLI) candidates(ctx context.Context) ([]cliSession, error) {
 		files, _ := os.ReadDir(filepath.Join(dir, "chats"))
 		for _, f := range files {
 			name := f.Name()
-			if !f.Type().IsRegular() || !strings.HasPrefix(name, "session-") || !(strings.HasSuffix(name, ".jsonl") || strings.HasSuffix(name, ".json")) {
+			isLog := strings.HasSuffix(name, ".jsonl") || strings.HasSuffix(name, ".json")
+			if !f.Type().IsRegular() || !strings.HasPrefix(name, "session-") || !isLog {
 				continue
 			}
 			path := filepath.Join(dir, "chats", name)
