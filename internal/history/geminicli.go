@@ -53,13 +53,42 @@ func NewGeminiCLI() *GeminiCLI {
 // Source implements Reader.
 func (g *GeminiCLI) Source() Source { return SourceGeminiCLI }
 
-func (g *GeminiCLI) store() cliStore {
-	return cliStore{source: SourceGeminiCLI, wakeDir: g.WakeDir, scratchDir: g.ScratchDir, window: g.Window, now: g.Now, sessions: fromCandidates(g.candidates)}
+func (g *GeminiCLI) store(opts Options, id string) cliStore {
+	sel := geminiSelect{id: id}
+	if id == "" {
+		w := effectiveWindow(g.Window, opts)
+		sel.cutoff = orNow(g.Now).Add(-w.MaxAge)
+	}
+	return cliStore{source: SourceGeminiCLI, wakeDir: g.WakeDir, scratchDir: g.ScratchDir, window: g.Window, now: g.Now, sessions: fromCandidates(func(ctx context.Context) ([]cliSession, error) {
+		return g.candidates(ctx, sel)
+	})}
 }
 
-// candidates replays every main session file for its metadata and time,
-// newest first.
-func (g *GeminiCLI) candidates(ctx context.Context) ([]cliSession, error) {
+// geminiSelect says which session files a lookup needs replayed: with id
+// set, only files whose name carries that id's first eight characters;
+// otherwise only files modified at or after cutoff. A file's mtime is an
+// upper bound on its last activity, so a file modified before cutoff
+// holds no session inside the window.
+type geminiSelect struct {
+	id     string
+	cutoff time.Time
+}
+
+// geminiFileID is the short session id in a session-<start>-<id8> file
+// name, or "" when the name does not carry one.
+func geminiFileID(name string) string {
+	base := strings.TrimSuffix(strings.TrimSuffix(name, ".jsonl"), ".json")
+	if i := strings.LastIndexByte(base, '-'); i >= 0 && len(base)-i-1 == 8 {
+		return base[i+1:]
+	}
+	return ""
+}
+
+// candidates replays the main session files sel needs for their metadata
+// and time, newest first. Files left out because they are older than the
+// window are stood in for by one session, updated at the newest such
+// file's mtime, so a scan still stops at the window's edge.
+func (g *GeminiCLI) candidates(ctx context.Context, sel geminiSelect) ([]cliSession, error) {
 	root := filepath.Join(g.Home, "tmp")
 	projects, err := os.ReadDir(root)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -69,6 +98,8 @@ func (g *GeminiCLI) candidates(ctx context.Context) ([]cliSession, error) {
 		return nil, fmt.Errorf("gemini-cli: read sessions: %w", err)
 	}
 	byID := map[string]cliSession{}
+	var stale *cliSession
+	found := false
 	for _, p := range projects {
 		if !p.IsDir() {
 			continue
@@ -88,7 +119,29 @@ func (g *GeminiCLI) candidates(ctx context.Context) ([]cliSession, error) {
 			if !f.Type().IsRegular() || !strings.HasPrefix(name, "session-") || !isLog {
 				continue
 			}
+			found = true
 			path := filepath.Join(dir, "chats", name)
+			var mtime time.Time
+			if st, err := f.Info(); err == nil {
+				mtime = st.ModTime()
+			}
+			load := func() ([]turn, string, error) {
+				log, err := readGeminiLog(path)
+				if err != nil {
+					return nil, "", err
+				}
+				return log.turns(), "", nil
+			}
+			if sel.id != "" {
+				if short := geminiFileID(name); short != "" && !strings.HasPrefix(sel.id, short) {
+					continue
+				}
+			} else if !mtime.IsZero() && mtime.Before(sel.cutoff) {
+				if stale == nil || mtime.After(stale.updated) {
+					stale = &cliSession{cwd: cwd, updated: mtime, load: load}
+				}
+				continue
+			}
 			log, err := readGeminiLog(path)
 			if err != nil {
 				return nil, fmt.Errorf("gemini-cli: read session %s: %w", name, err)
@@ -96,20 +149,9 @@ func (g *GeminiCLI) candidates(ctx context.Context) ([]cliSession, error) {
 			if log.meta.Kind == "subagent" || !idPattern.MatchString(log.meta.SessionID) {
 				continue
 			}
-			e := cliSession{id: log.meta.SessionID, title: log.meta.Summary, cwd: cwd, updated: log.updated()}
+			e := cliSession{id: log.meta.SessionID, title: log.meta.Summary, cwd: cwd, updated: log.updated(), load: load}
 			if e.updated.IsZero() {
-				if st, err := f.Info(); err == nil {
-					e.updated = st.ModTime()
-				}
-			}
-			// The replay above is needed for the order; the turns are
-			// built only for the sessions that are read.
-			e.load = func() ([]turn, string, error) {
-				log, err := readGeminiLog(path)
-				if err != nil {
-					return nil, "", err
-				}
-				return log.turns(), "", nil
+				e.updated = mtime
 			}
 			// A session resumed from a legacy .json is rewritten as .jsonl;
 			// keep the newer copy.
@@ -118,12 +160,15 @@ func (g *GeminiCLI) candidates(ctx context.Context) ([]cliSession, error) {
 			}
 		}
 	}
-	if len(byID) == 0 {
+	if !found {
 		return nil, noHistory("Gemini CLI", root)
 	}
-	out := make([]cliSession, 0, len(byID))
+	out := make([]cliSession, 0, len(byID)+1)
 	for _, e := range byID {
 		out = append(out, e)
+	}
+	if stale != nil {
+		out = append(out, *stale)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if !out[i].updated.Equal(out[j].updated) {
@@ -371,10 +416,14 @@ func geminiText(raw json.RawMessage) string {
 
 // List implements Reader.
 func (g *GeminiCLI) List(ctx context.Context, count int, opts Options) (Page, error) {
-	return g.store().List(ctx, count, opts)
+	return g.store(opts, "").List(ctx, count, opts)
 }
 
 // Read implements Reader.
 func (g *GeminiCLI) Read(ctx context.Context, q Query, opts Options) (Page, error) {
-	return g.store().Read(ctx, q, opts)
+	id := ""
+	if q.Mode == ModeConversation {
+		id = q.ConversationID
+	}
+	return g.store(opts, id).Read(ctx, q, opts)
 }

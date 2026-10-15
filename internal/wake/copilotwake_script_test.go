@@ -79,6 +79,7 @@ type cliWake struct {
 	script, binEnv, binName                string
 	dir, home, config, state, argv, notice string
 	wakeHome, workdir, sessions            string
+	cwd                                    string // where the listener starts the wake, if set
 	env                                    []string
 }
 
@@ -137,6 +138,7 @@ func (h *cliWake) run(env ...string) grokRun {
 		"TINCAN_WAITING=2",
 	}, h.env...)
 	cmd.Env = append(cmd.Env, env...)
+	cmd.Dir = h.cwd
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err = cmd.Run()
@@ -353,6 +355,37 @@ func TestCopilotWakeIdentityCheck(t *testing.T) {
 			h.refused(h.run(), tc.want)
 		})
 	}
+}
+
+// A relative TINCAN_COPILOT_WAKE_HOME with an absolute workdir is taken
+// from where the listener started: Copilot runs with an absolute
+// COPILOT_HOME, and it is the one whose mcp-config.json the wake checked.
+func TestCopilotWakeRelativeWakeHome(t *testing.T) {
+	setup := func(t *testing.T) (*cliWake, string) {
+		h := newCopilotWake(t)
+		h.cwd = filepath.Join(h.dir, "launch")
+		mkdirs(t, h.cwd)
+		h.env = append(h.env, "TINCAN_COPILOT_WAKE_HOME=rel-home", "TINCAN_COPILOT_WORKDIR="+filepath.Join(h.dir, "work"))
+		return h, filepath.Join(canonical(t, h.cwd), "rel-home", ".copilot")
+	}
+	t.Run("runs with the checked home", func(t *testing.T) {
+		h, want := setup(t)
+		r := h.run()
+		if r.err != nil {
+			t.Fatalf("wake: %v\nstderr:\n%s", r.err, r.stderr)
+		}
+		if env := strings.Split(h.file("env.0"), "\n"); env[0] != want {
+			t.Fatalf("copilot ran with COPILOT_HOME %q, want %q", env[0], want)
+		}
+		if got := strings.TrimSpace(h.file("cwd.0")); got != canonical(t, filepath.Join(h.dir, "work")) {
+			t.Fatalf("copilot ran in %q, want the workdir", got)
+		}
+	})
+	t.Run("checks that home's MCP servers", func(t *testing.T) {
+		h, home := setup(t)
+		h.write(filepath.Join(home, "mcp-config.json"), `{"mcpServers":{"files":{"command":"npx","args":["fs"]}}}`)
+		h.refused(h.run(), "did not allow: files")
+	})
 }
 
 func TestCopilotWakeAuthFailureBacksOff(t *testing.T) {

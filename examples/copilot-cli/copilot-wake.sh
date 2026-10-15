@@ -73,6 +73,9 @@ export TINCAN_CONFIG
 
 WAKE_HOME=${TINCAN_COPILOT_WAKE_HOME:-$(tincan_wake_beside_config "$TINCAN_CONFIG" .wake)}
 WAKE_HOME=${WAKE_HOME%/}
+# A relative wake home is taken from where the listener started, so the
+# COPILOT_HOME the wake checks is the one Copilot runs with after the cd.
+case $WAKE_HOME in /*) ;; *) WAKE_HOME=$(pwd -P)/$WAKE_HOME ;; esac
 COPILOT_HOME_DIR=$WAKE_HOME/.copilot
 WORKDIR=${TINCAN_COPILOT_WORKDIR:-$WAKE_HOME/work}
 SESSIONS=$(tincan_wake_beside_config "$TINCAN_CONFIG" .wake-sessions)

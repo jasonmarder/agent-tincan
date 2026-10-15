@@ -76,6 +76,40 @@ func TestGeminiCLIConversationReplaysTheLog(t *testing.T) {
 	}
 }
 
+// Session files modified before the window are not replayed for a list
+// or a latest read, but a lookup by id still finds an old session.
+func TestGeminiCLISkipsFilesOlderThanTheWindow(t *testing.T) {
+	r := geminiCLIFixture(t)
+	chats := filepath.Join(r.Home, "tmp", "x", "chats")
+	setMtime(t, filepath.Join(chats, "session-2026-08-01T00-00-0g0g0000.jsonl"), "2026-08-01T00:00:05Z")
+	// An old file that is not JSON and cannot be opened: replaying it would
+	// fail the read.
+	bad := filepath.Join(chats, "session-2026-07-01T00-00-deadbeef.jsonl")
+	if err := os.WriteFile(bad, []byte("not json {"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setMtime(t, bad, "2026-07-01T00:00:00Z")
+	if err := os.Chmod(bad, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(bad, 0o644) })
+	if f, err := os.Open(bad); err == nil {
+		_ = f.Close()
+		t.Skip("running with permission to read a mode 0 file")
+	}
+	page, err := r.List(context.Background(), 20, Options{})
+	if err != nil || ids(page.Conversations) != geminiCLI1+","+geminiCLI2 || page.Limited != LimitAge {
+		t.Fatalf("list = %s (limited %q), %v; want 1,2 limited by age", ids(page.Conversations), page.Limited, err)
+	}
+	if _, err := convsOf(r.Read(context.Background(), Query{Source: SourceGeminiCLI, Mode: ModeLatest}, Options{})); err != nil {
+		t.Fatalf("latest: %v", err)
+	}
+	got, err := convsOf(r.Read(context.Background(), Query{Source: SourceGeminiCLI, Mode: ModeConversation, ConversationID: geminiCLI5}, Options{}))
+	if err != nil || len(got) != 1 || got[0].ID != geminiCLI5 || len(got[0].Messages) == 0 {
+		t.Fatalf("old session by id = %+v, %v", got, err)
+	}
+}
+
 func TestGeminiCLINoHistory(t *testing.T) {
 	home := filepath.Join(t.TempDir(), ".gemini")
 	r := &GeminiCLI{Home: home}
