@@ -2,6 +2,7 @@ package history
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -50,7 +51,7 @@ func NewCopilotCLI() *CopilotCLI {
 func (c *CopilotCLI) Source() Source { return SourceCopilotCLI }
 
 func (c *CopilotCLI) store() cliStore {
-	return cliStore{source: SourceCopilotCLI, wakeDir: c.WakeDir, scratchDir: c.ScratchDir, window: c.Window, now: c.Now}
+	return cliStore{source: SourceCopilotCLI, wakeDir: c.WakeDir, scratchDir: c.ScratchDir, window: c.Window, now: c.Now, sessions: fromCandidates(c.candidates)}
 }
 
 // candidates returns the sessions newest first.
@@ -96,10 +97,20 @@ func (c *CopilotCLI) candidates(ctx context.Context) ([]cliSession, error) {
 	return out, nil
 }
 
+var (
+	copilotUserMessage      = []byte("user.message")
+	copilotAssistantMessage = []byte("assistant.message")
+)
+
 // copilotCLITurns reads one events.jsonl.
 func copilotCLITurns(path string, updated time.Time) ([]turn, string, error) {
 	var turns []turn
 	err := scanFile(path, func(line []byte) bool {
+		// Most events are tool calls and other bookkeeping; skip them
+		// without decoding.
+		if !bytes.Contains(line, copilotUserMessage) && !bytes.Contains(line, copilotAssistantMessage) {
+			return true
+		}
 		var ev struct {
 			Type      string `json:"type"`
 			Timestamp string `json:"timestamp"`
@@ -172,24 +183,10 @@ func readSimpleYAML(path string) map[string]string {
 
 // List implements Reader.
 func (c *CopilotCLI) List(ctx context.Context, count int, opts Options) (Page, error) {
-	if err := checkListCount(count); err != nil {
-		return Page{}, err
-	}
-	cands, err := c.candidates(ctx)
-	if err != nil {
-		return Page{}, err
-	}
-	return c.store().list(ctx, cands, count, opts)
+	return c.store().List(ctx, count, opts)
 }
 
 // Read implements Reader.
 func (c *CopilotCLI) Read(ctx context.Context, q Query, opts Options) (Page, error) {
-	if err := readCLI(SourceCopilotCLI, q); err != nil {
-		return Page{}, err
-	}
-	cands, err := c.candidates(ctx)
-	if err != nil {
-		return Page{}, err
-	}
-	return c.store().read(ctx, cands, q, opts)
+	return c.store().Read(ctx, q, opts)
 }

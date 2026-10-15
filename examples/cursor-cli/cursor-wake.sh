@@ -50,10 +50,6 @@
 set -eu
 
 : "${TINCAN_CONFIG:=$HOME/.config/tincan/cursor-cli.json}"
-# shellcheck disable=SC2088 # a literal ~/ prefix, which tincan expands
-case $TINCAN_CONFIG in "~/"*) TINCAN_CONFIG=$HOME/${TINCAN_CONFIG#"~/"} ;; esac
-case $TINCAN_CONFIG in /*) ;; *) TINCAN_CONFIG=$(pwd -P)/$TINCAN_CONFIG ;; esac
-export TINCAN_CONFIG
 
 # The library sits next to this script, or in the repo's examples/lib.
 here=$(dirname -- "$0")
@@ -68,21 +64,19 @@ fi
 # shellcheck source=SCRIPTDIR/../lib/tincan-wake-lib.sh
 . "$TINCAN_WAKE_LIB"
 
-cfg_dir=$(dirname -- "$TINCAN_CONFIG")
-cfg_name=$(basename -- "$TINCAN_CONFIG" .json)
-WAKE_HOME=${TINCAN_CURSOR_WAKE_HOME:-$cfg_dir/$cfg_name.wake}
+TINCAN_CONFIG=$(tincan_wake_config_path "$TINCAN_CONFIG")
+export TINCAN_CONFIG
+
+WAKE_HOME=${TINCAN_CURSOR_WAKE_HOME:-$(tincan_wake_beside_config "$TINCAN_CONFIG" .wake)}
 WAKE_HOME=${WAKE_HOME%/}
 WORKDIR=${TINCAN_CURSOR_WORKDIR:-$WAKE_HOME/work}
-SESSIONS=$cfg_dir/$cfg_name.wake-sessions
+SESSIONS=$(tincan_wake_beside_config "$TINCAN_CONFIG" .wake-sessions)
 BIN=${CURSOR_AGENT_BIN:-cursor-agent}
 # cursor-agent prints its build, 2026.10.14-0f9edde. (Braces cannot sit
 # inside a ${...:-default}, so the default is set apart.)
 VERSION_PATTERN='^[0-9][0-9][0-9][0-9][.][0-9]+[.][0-9]+-[0-9a-f]+'
 VERSION_PATTERN=${TINCAN_CURSOR_VERSION_PATTERN:-$VERSION_PATTERN}
-# The Agent Tincan tools (internal/mcpserver), the only ones a run may use.
-TINCAN_TOOLS="ask get_reply check_inbox claim progress reply answer cancel list_agents onboard get_attachment trace search"
-
-: "${TINCAN_WAKE_STATE_DIR:=$cfg_dir/$cfg_name.wake-state}"
+: "${TINCAN_WAKE_STATE_DIR:=$(tincan_wake_beside_config "$TINCAN_CONFIG" .wake-state)}"
 case $TINCAN_WAKE_STATE_DIR in /*) ;; *) TINCAN_WAKE_STATE_DIR=$(pwd -P)/$TINCAN_WAKE_STATE_DIR ;; esac
 
 tincan_wake_init cursor-cli
@@ -105,20 +99,11 @@ if [ -e "$workdir_c/.cursor/hooks.json" ] || [ -L "$workdir_c/.cursor/hooks.json
   tincan_wake_refuse "found $workdir_c/.cursor/hooks.json; its hooks would run unattended in every wake, so remove it"
 fi
 
-# write_file FILE: writes stdin to FILE through a temporary file.
-write_file() {
-  if ! { cat >"$1.$$" && mv -f "$1.$$" "$1"; } 2>/dev/null; then
-    rm -f "$1.$$"
-    tincan_wake_refuse "cannot write $1"
-  fi
-}
-
 # The workspace's MCP config, rewritten before every run: only agent-tincan.
-tincan_path=$(command -v "${TINCAN_BIN:-tincan}" 2>/dev/null) || tincan_wake_refuse "${TINCAN_BIN:-tincan} is not installed or not on PATH"
-case $tincan_path in /*) ;; *) tincan_wake_refuse "${TINCAN_BIN:-tincan} is not a program on PATH; set TINCAN_BIN to the tincan binary's path" ;; esac
+tincan_wake_resolve_tincan
 printf '{"mcpServers":{"agent-tincan":{"command":%s,"args":["mcp"],"env":{"TINCAN_CONFIG":%s}}}}\n' \
-  "$(tincan_wake_json_string "$tincan_path")" "$(tincan_wake_json_string "$TINCAN_CONFIG")" |
-  write_file "$workdir_c/.cursor/mcp.json"
+  "$(tincan_wake_json_string "$tincan_wake_tincan")" "$(tincan_wake_json_string "$TINCAN_CONFIG")" |
+  tincan_wake_write_file "$workdir_c/.cursor/mcp.json"
 
 # Cursor loads the owner's ~/.cursor/mcp.json and the workspace's.
 # shellcheck disable=SC2329 # run by tincan_wake_check_identity
@@ -132,12 +117,12 @@ tincan_wake_check_identity cursor_mcp_list
 {
   printf '{"permissions":{"allow":['
   sep=
-  for tool in $TINCAN_TOOLS; do
+  for tool in $tincan_wake_tools; do
     printf '%s%s' "$sep" "$(tincan_wake_json_string "Mcp($tincan_wake_server:$tool)")"
     sep=,
   done
   printf '],"deny":[]}}\n'
-} | write_file "$workdir_c/.cursor/cli.json"
+} | tincan_wake_write_file "$workdir_c/.cursor/cli.json"
 
 # The workdir is recorded before the run, so even a run the timeout kills
 # is known to the history agent; the session id once Cursor reports it.

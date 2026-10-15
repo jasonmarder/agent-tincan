@@ -57,7 +57,7 @@ func NewCursorCLI() *CursorCLI {
 func (c *CursorCLI) Source() Source { return SourceCursorCLI }
 
 func (c *CursorCLI) store() cliStore {
-	return cliStore{source: SourceCursorCLI, wakeDir: c.WakeDir, scratchDir: c.ScratchDir, window: c.Window, now: c.Now}
+	return cliStore{source: SourceCursorCLI, wakeDir: c.WakeDir, scratchDir: c.ScratchDir, window: c.Window, now: c.Now, sessions: fromCandidates(c.candidates)}
 }
 
 // candidates returns the sessions newest first.
@@ -175,9 +175,14 @@ func cursorCLITurns(db *sql.DB, updated time.Time) ([]turn, string, error) {
 	if err := json.Unmarshal(raw, &meta); err != nil || meta.Root == "" {
 		return nil, "", nil
 	}
+	stmt, err := db.Prepare(`SELECT data FROM blobs WHERE id = ?`)
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() { _ = stmt.Close() }()
 	blob := func(id string) ([]byte, error) {
 		var b []byte
-		err := db.QueryRow(`SELECT data FROM blobs WHERE id = ?`, id).Scan(&b)
+		err := stmt.QueryRow(id).Scan(&b)
 		return b, err
 	}
 	root, err := blob(meta.Root)
@@ -328,26 +333,12 @@ func parseCursorTimestamp(s string) time.Time {
 
 // List implements Reader.
 func (c *CursorCLI) List(ctx context.Context, count int, opts Options) (Page, error) {
-	if err := checkListCount(count); err != nil {
-		return Page{}, err
-	}
-	cands, err := c.candidates(ctx)
-	if err != nil {
-		return Page{}, err
-	}
-	return c.store().list(ctx, cands, count, opts)
+	return c.store().List(ctx, count, opts)
 }
 
 // Read implements Reader.
 func (c *CursorCLI) Read(ctx context.Context, q Query, opts Options) (Page, error) {
-	if err := readCLI(SourceCursorCLI, q); err != nil {
-		return Page{}, err
-	}
-	cands, err := c.candidates(ctx)
-	if err != nil {
-		return Page{}, err
-	}
-	return c.store().read(ctx, cands, q, opts)
+	return c.store().Read(ctx, q, opts)
 }
 
 // CursorIDE reads the Cursor editor's chats (composers) from its global
@@ -381,43 +372,38 @@ func NewCursorIDE() *CursorIDE {
 func (c *CursorIDE) Source() Source { return SourceCursorIDE }
 
 func (c *CursorIDE) store() cliStore {
-	return cliStore{source: SourceCursorIDE, wakeDir: c.WakeDir, window: c.Window, now: c.Now}
+	return cliStore{source: SourceCursorIDE, wakeDir: c.WakeDir, window: c.Window, now: c.Now,
+		sessions: func(ctx context.Context, fn func([]cliSession) error) error {
+			return withSQLiteSessions(ctx, "Cursor IDE", filepath.Join(c.Dir, "state.vscdb"), c.TempDir, cursorIDECandidates, fn)
+		}}
 }
 
-// with runs fn on the composers of a copy of the state database, newest
-// first.
-func (c *CursorIDE) with(ctx context.Context, fn func(cands []cliSession) error) error {
-	path := filepath.Join(c.Dir, "state.vscdb")
-	err := withSQLiteCopy(path, c.TempDir, func(db *sql.DB) error {
-		cands, err := cursorIDECandidates(ctx, db)
-		if err != nil {
-			return err
-		}
-		if len(cands) == 0 {
-			return noHistory("Cursor IDE", path)
-		}
-		return fn(cands)
-	})
-	if errors.Is(err, fs.ErrNotExist) {
-		return noHistory("Cursor IDE", path)
-	}
-	return err
-}
-
-// cursorIDEComposer is the part of composerData the reader uses.
-type cursorIDEComposer struct {
-	ComposerID    string `json:"composerId"`
-	Name          string `json:"name"`
-	CreatedAt     int64  `json:"createdAt"`
-	LastUpdatedAt int64  `json:"lastUpdatedAt"`
-	Headers       []struct {
+// cursorIDEHeaders is the part of composerData the reader uses to read
+// a composer's messages: the ordered bubble headers.
+type cursorIDEHeaders struct {
+	Headers []struct {
 		BubbleID string `json:"bubbleId"`
 		Type     int    `json:"type"`
 	} `json:"fullConversationHeadersOnly"`
 }
 
+// cursorIDECandidates returns the composers that have messages, newest
+// first. Only the fields the list needs leave the database here (the
+// filter skips what the composerData JSON decode would reject); a
+// composer's headers are decoded when its turns are read.
 func cursorIDECandidates(ctx context.Context, db *sql.DB) ([]cliSession, error) {
-	rows, err := db.QueryContext(ctx, `SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%'`)
+	rows, err := db.QueryContext(ctx, `SELECT key, json_extract(v, '$.name'), json_extract(v, '$.createdAt'), json_extract(v, '$.lastUpdatedAt')
+		FROM (SELECT key, CAST(value AS TEXT) AS v FROM cursorDiskKV WHERE key LIKE 'composerData:%')
+		WHERE json_valid(v) AND json_type(v) = 'object'
+			AND coalesce(json_type(v, '$.name'), 'null') IN ('null', 'text')
+			AND coalesce(json_type(v, '$.createdAt'), 'null') IN ('null', 'integer')
+			AND coalesce(json_type(v, '$.lastUpdatedAt'), 'null') IN ('null', 'integer')
+			AND json_type(v, '$.fullConversationHeadersOnly') = 'array'
+			AND json_array_length(v, '$.fullConversationHeadersOnly') > 0
+			AND NOT EXISTS (SELECT 1 FROM json_each(v, '$.fullConversationHeadersOnly') h
+				WHERE h.type NOT IN ('object', 'null')
+					OR coalesce(json_type(h.value, '$.bubbleId'), 'null') NOT IN ('null', 'text')
+					OR coalesce(json_type(h.value, '$.type'), 'null') NOT IN ('null', 'integer'))`)
 	if err != nil {
 		return nil, err
 	}
@@ -425,17 +411,17 @@ func cursorIDECandidates(ctx context.Context, db *sql.DB) ([]cliSession, error) 
 	var out []cliSession
 	for rows.Next() {
 		var key string
-		var raw []byte
-		if err := rows.Scan(&key, &raw); err != nil {
+		var name sql.NullString
+		var created, lastUpdated sql.NullInt64
+		if err := rows.Scan(&key, &name, &created, &lastUpdated); err != nil {
 			return nil, err
 		}
-		var cd cursorIDEComposer
 		id := strings.TrimPrefix(key, "composerData:")
-		if json.Unmarshal(raw, &cd) != nil || len(cd.Headers) == 0 || !idPattern.MatchString(id) {
+		if !idPattern.MatchString(id) {
 			continue
 		}
-		e := cliSession{id: id, title: cd.Name, updated: msTime(max(cd.LastUpdatedAt, cd.CreatedAt))}
-		e.load = func() ([]turn, string, error) { return cursorIDETurns(ctx, db, id, cd, e.updated) }
+		e := cliSession{id: id, title: name.String, updated: msTime(max(lastUpdated.Int64, created.Int64))}
+		e.load = func() ([]turn, string, error) { return cursorIDETurns(ctx, db, id, e.updated) }
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
@@ -446,11 +432,31 @@ func cursorIDECandidates(ctx context.Context, db *sql.DB) ([]cliSession, error) 
 }
 
 // cursorIDETurns reads a composer's bubbles in header order.
-func cursorIDETurns(ctx context.Context, db *sql.DB, id string, cd cursorIDEComposer, updated time.Time) ([]turn, string, error) {
+func cursorIDETurns(ctx context.Context, db *sql.DB, id string, updated time.Time) ([]turn, string, error) {
+	stmt, err := db.PrepareContext(ctx, `SELECT value FROM cursorDiskKV WHERE key = ?`)
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() { _ = stmt.Close() }()
+	value := func(key string) ([]byte, error) {
+		var raw []byte
+		err := stmt.QueryRowContext(ctx, key).Scan(&raw)
+		return raw, err
+	}
+	raw, err := value("composerData:" + id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, "", nil
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	var cd cursorIDEHeaders
+	if json.Unmarshal(raw, &cd) != nil {
+		return nil, "", nil
+	}
 	var turns []turn
 	for _, h := range cd.Headers {
-		var raw []byte
-		err := db.QueryRowContext(ctx, `SELECT value FROM cursorDiskKV WHERE key = ?`, "bubbleId:"+id+":"+h.BubbleID).Scan(&raw)
+		raw, err := value("bubbleId:" + id + ":" + h.BubbleID)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
@@ -499,25 +505,11 @@ func jsonTime(raw json.RawMessage) time.Time {
 }
 
 // List implements Reader.
-func (c *CursorIDE) List(ctx context.Context, count int, opts Options) (page Page, err error) {
-	if err := checkListCount(count); err != nil {
-		return Page{}, err
-	}
-	err = c.with(ctx, func(cands []cliSession) error {
-		page, err = c.store().list(ctx, cands, count, opts)
-		return err
-	})
-	return page, err
+func (c *CursorIDE) List(ctx context.Context, count int, opts Options) (Page, error) {
+	return c.store().List(ctx, count, opts)
 }
 
 // Read implements Reader.
-func (c *CursorIDE) Read(ctx context.Context, q Query, opts Options) (page Page, err error) {
-	if err := readCLI(SourceCursorIDE, q); err != nil {
-		return Page{}, err
-	}
-	err = c.with(ctx, func(cands []cliSession) error {
-		page, err = c.store().read(ctx, cands, q, opts)
-		return err
-	})
-	return page, err
+func (c *CursorIDE) Read(ctx context.Context, q Query, opts Options) (Page, error) {
+	return c.store().Read(ctx, q, opts)
 }

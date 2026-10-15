@@ -155,8 +155,9 @@ func (g *GrokCLI) candidates(ctx context.Context) ([]grokEntry, error) {
 	return out, nil
 }
 
-// grokWakes is what the grok-cli wakes on this machine left behind.
-type grokWakes struct {
+// wakeLists is what the wakes on this machine left behind: recorded
+// <name>.wake-sessions lists and wake homes, for every command-woken CLI.
+type wakeLists struct {
 	ids   map[string]bool
 	dirs  []string // workdirs and wake homes
 	homes []string // the wakes' GROK_HOMEs
@@ -164,13 +165,13 @@ type grokWakes struct {
 
 // wakes reads every <name>.wake-sessions list and <name>.wake home in
 // WakeDir. A missing directory or list means no wakes.
-func (g *GrokCLI) wakes() grokWakes { return readWakes(g.WakeDir) }
+func (g *GrokCLI) wakes() wakeLists { return readWakes(g.WakeDir) }
 
 // readWakes reads every <name>.wake-sessions list and <name>.wake home in
 // dir, whichever command-woken CLI wrote them. A missing directory or list
 // means no wakes.
-func readWakes(dir string) grokWakes {
-	w := grokWakes{ids: map[string]bool{}}
+func readWakes(dir string) wakeLists {
+	w := wakeLists{ids: map[string]bool{}}
 	if dir == "" {
 		return w
 	}
@@ -193,7 +194,7 @@ func readWakes(dir string) grokWakes {
 
 // readList adds the ids and workdir lines of one recorded list; other
 // lines are ignored.
-func (w *grokWakes) readList(path string) {
+func (w *wakeLists) readList(path string) {
 	f, err := os.Open(path)
 	if err != nil {
 		return
@@ -215,7 +216,7 @@ func (w *grokWakes) readList(path string) {
 }
 
 // automated reports whether e is a wake run.
-func (w grokWakes) automated(e grokEntry) bool {
+func (w wakeLists) automated(e grokEntry) bool {
 	if w.ids[e.id] || e.summary.SandboxProfile == GrokWakeSandboxProfile {
 		return true
 	}
@@ -232,7 +233,7 @@ func (w grokWakes) automated(e grokEntry) bool {
 
 // inWakeDir reports whether cwd is a wake's working directory or inside a
 // wake home.
-func (w grokWakes) inWakeDir(cwd string) bool {
+func (w wakeLists) inWakeDir(cwd string) bool {
 	for _, d := range w.dirs {
 		if inDirResolved(cwd, d) {
 			return true
@@ -311,7 +312,7 @@ func grokPromptTimes(cwdDir, id string) []grokPrompt {
 
 // parse reads one session into a thread, applying the exclusions: the
 // scratch dir always, wake runs unless all.
-func (g *GrokCLI) parse(e grokEntry, w grokWakes, all, images bool) (thread, bool, error) {
+func (g *GrokCLI) parse(e grokEntry, w wakeLists, all, images bool) (thread, bool, error) {
 	if inDir(e.cwd, g.ScratchDir) {
 		return thread{}, false, nil
 	}

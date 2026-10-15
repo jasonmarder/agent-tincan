@@ -37,9 +37,67 @@ type cliStore struct {
 	scratchDir string
 	window     Window
 	now        func() time.Time
+	// sessions runs fn on the CLI's sessions, newest first.
+	sessions func(ctx context.Context, fn func(cands []cliSession) error) error
 }
 
-func (s cliStore) thread(e cliSession, w grokWakes, all bool) (thread, bool, error) {
+// fromCandidates adapts a function that returns the sessions to
+// cliStore.sessions.
+func fromCandidates(cands func(context.Context) ([]cliSession, error)) func(context.Context, func([]cliSession) error) error {
+	return func(ctx context.Context, fn func([]cliSession) error) error {
+		c, err := cands(ctx)
+		if err != nil {
+			return err
+		}
+		return fn(c)
+	}
+}
+
+// withSQLiteSessions runs fn on the sessions load reads from a copy of the
+// SQLite database at path (withSQLiteCopy), newest first. A missing
+// database, or one with no sessions, is no history for label.
+func withSQLiteSessions(ctx context.Context, label, path, tempDir string, load func(context.Context, *sql.DB) ([]cliSession, error), fn func(cands []cliSession) error) error {
+	err := withSQLiteCopy(path, tempDir, func(db *sql.DB) error {
+		cands, err := load(ctx, db)
+		if err != nil {
+			return err
+		}
+		if len(cands) == 0 {
+			return noHistory(label, path)
+		}
+		return fn(cands)
+	})
+	if errors.Is(err, fs.ErrNotExist) {
+		return noHistory(label, path)
+	}
+	return err
+}
+
+// List implements Reader.List for a local CLI.
+func (s cliStore) List(ctx context.Context, count int, opts Options) (page Page, err error) {
+	if err := checkListCount(count); err != nil {
+		return Page{}, err
+	}
+	err = s.sessions(ctx, func(cands []cliSession) error {
+		page, err = s.list(ctx, cands, count, opts)
+		return err
+	})
+	return page, err
+}
+
+// Read implements Reader.Read for a local CLI.
+func (s cliStore) Read(ctx context.Context, q Query, opts Options) (page Page, err error) {
+	if err := readCLI(s.source, q); err != nil {
+		return Page{}, err
+	}
+	err = s.sessions(ctx, func(cands []cliSession) error {
+		page, err = s.read(ctx, cands, q, opts)
+		return err
+	})
+	return page, err
+}
+
+func (s cliStore) thread(e cliSession, w wakeLists, all bool) (thread, bool, error) {
 	if inDirResolved(e.cwd, s.scratchDir) {
 		return thread{}, false, nil
 	}

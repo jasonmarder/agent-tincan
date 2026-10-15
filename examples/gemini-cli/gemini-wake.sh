@@ -73,6 +73,11 @@ fi
 # shellcheck source=SCRIPTDIR/../lib/tincan-wake-lib.sh
 . "$TINCAN_WAKE_LIB"
 
+# TINCAN_CONFIG itself is passed on as given; the wake's own uses of it
+# need an absolute path, since the run is started from the workdir.
+cfg=$(tincan_wake_config_path "$TINCAN_CONFIG")
+SESSIONS=$(tincan_wake_beside_config "$cfg" .wake-sessions)
+
 ENGINE=${TINCAN_GEMINI_ENGINE:-agy}
 WORKDIR=${TINCAN_GEMINI_WORKDIR:-$HOME/tincan-gemini}
 ALLOWED_ROOTS=${TINCAN_GEMINI_ALLOWED_ROOTS:-$HOME/code:$HOME/tincan-gemini}
@@ -186,9 +191,7 @@ tincan_wake_check_identity gemini_mcp_list
 # agent name read from the config ("default" when it is missing or not a
 # plain name, as tincan does).
 gemini_attachment_dir() {
-  _cfg=$TINCAN_CONFIG
-  # shellcheck disable=SC2088 # a literal ~/ prefix, which tincan expands
-  case $_cfg in "~/"*) _cfg=$HOME/${_cfg#"~/"} ;; esac
+  _cfg=$cfg
   _agent=
   if [ -r "$_cfg" ]; then
     case $(gemini_json_tool) in
@@ -253,11 +256,6 @@ err=$state/err.$$
 trap 'rm -f "$out" "$err"; _tw_cleanup' EXIT
 # The workdir is recorded before the run, so even a run the timeout kills
 # is known to the history agent; the session id once the engine reports it.
-cfg=$TINCAN_CONFIG
-# shellcheck disable=SC2088 # a literal ~/ prefix, which tincan expands
-case $cfg in "~/"*) cfg=$HOME/${cfg#"~/"} ;; esac
-case $cfg in /*) ;; *) cfg=$(pwd -P)/$cfg ;; esac
-SESSIONS=$(dirname -- "$cfg")/$(basename -- "$cfg" .json).wake-sessions
 cd "$WORKDIR"
 workdir_c=$(pwd -P)
 tincan_wake_record_session "$SESSIONS" "$workdir_c"

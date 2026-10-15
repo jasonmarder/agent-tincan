@@ -4,8 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,27 +58,13 @@ func NewOpenCode() *OpenCode {
 func (o *OpenCode) Source() Source { return SourceOpenCode }
 
 func (o *OpenCode) store() cliStore {
-	return cliStore{source: SourceOpenCode, wakeDir: o.WakeDir, scratchDir: o.ScratchDir, window: o.Window, now: o.Now}
+	return cliStore{source: SourceOpenCode, wakeDir: o.WakeDir, scratchDir: o.ScratchDir, window: o.Window, now: o.Now,
+		sessions: func(ctx context.Context, fn func([]cliSession) error) error {
+			return withSQLiteSessions(ctx, "OpenCode", o.DB, o.TempDir, openCodeCandidates, fn)
+		}}
 }
 
-// with runs fn on the sessions of a copy of the database, newest first.
-func (o *OpenCode) with(ctx context.Context, fn func(cands []cliSession) error) error {
-	err := withSQLiteCopy(o.DB, o.TempDir, func(db *sql.DB) error {
-		cands, err := openCodeCandidates(ctx, db)
-		if err != nil {
-			return err
-		}
-		if len(cands) == 0 {
-			return noHistory("OpenCode", o.DB)
-		}
-		return fn(cands)
-	})
-	if errors.Is(err, fs.ErrNotExist) {
-		return noHistory("OpenCode", o.DB)
-	}
-	return err
-}
-
+// openCodeCandidates returns a database's sessions, newest first.
 func openCodeCandidates(ctx context.Context, db *sql.DB) ([]cliSession, error) {
 	rows, err := db.QueryContext(ctx, `SELECT id, parent_id, directory, title, time_created, time_updated FROM session ORDER BY time_updated DESC, id DESC`)
 	if err != nil {
@@ -176,25 +160,11 @@ func openCodeTurns(ctx context.Context, db *sql.DB, id string, updated time.Time
 }
 
 // List implements Reader.
-func (o *OpenCode) List(ctx context.Context, count int, opts Options) (page Page, err error) {
-	if err := checkListCount(count); err != nil {
-		return Page{}, err
-	}
-	err = o.with(ctx, func(cands []cliSession) error {
-		page, err = o.store().list(ctx, cands, count, opts)
-		return err
-	})
-	return page, err
+func (o *OpenCode) List(ctx context.Context, count int, opts Options) (Page, error) {
+	return o.store().List(ctx, count, opts)
 }
 
 // Read implements Reader.
-func (o *OpenCode) Read(ctx context.Context, q Query, opts Options) (page Page, err error) {
-	if err := readCLI(SourceOpenCode, q); err != nil {
-		return Page{}, err
-	}
-	err = o.with(ctx, func(cands []cliSession) error {
-		page, err = o.store().read(ctx, cands, q, opts)
-		return err
-	})
-	return page, err
+func (o *OpenCode) Read(ctx context.Context, q Query, opts Options) (Page, error) {
+	return o.store().Read(ctx, q, opts)
 }

@@ -1,7 +1,7 @@
 // Package history reads Matt's conversations with ChatGPT, claude.ai, Grok,
 // Gemini, Copilot, Codex, Claude Code, Grok CLI, Cursor (CLI and IDE),
-// Copilot CLI, Gemini CLI and OpenCode so the history agent can answer "what did Matt last ask"
-// and send back the images from that turn.
+// Copilot CLI, Gemini CLI and OpenCode so the history agent can answer
+// "what did Matt last ask" and send back the images from that turn.
 //
 // Every source is an adapter behind Reader. Adapters share one Query shape,
 // one recency window and one image pipeline: readers return image bytes,

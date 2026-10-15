@@ -50,10 +50,10 @@ func connectCmd() *cobra.Command {
 				Code string `json:"code"`
 				URL  string `json:"url"`
 			}
-			in := map[string]any{"name": args[0]}
-			if replace {
-				in["replace"] = true
-			}
+			in := struct {
+				Name    string `json:"name"`
+				Replace bool   `json:"replace,omitempty"`
+			}{Name: args[0], Replace: replace}
 			if err := r.Raw(cmd.Context(), "POST", "/v1/admin/connect", in, &out); err != nil {
 				return err
 			}

@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/md5"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,57 +13,12 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
-
-// fixtureDB creates a SQLite database at path in WAL mode and runs stmts
-// in it. The connection stays open until the test ends and automatic
-// checkpoints are off, so everything written is only in the -wal file,
-// as with a store the app still holds open.
-func fixtureDB(t *testing.T, path string, stmts ...string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-	for _, s := range append([]string{"PRAGMA journal_mode=WAL", "PRAGMA wal_autocheckpoint=0"}, stmts...) {
-		if _, err := db.Exec(s); err != nil {
-			t.Fatalf("%s: %v", s, err)
-		}
-	}
-}
-
-// sqlQuote is a SQL string literal for fixture statements.
-func sqlQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
-
-// emptyDir fails the test unless dir has no entries.
-func emptyDir(t *testing.T, dir string) {
-	t.Helper()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) > 0 {
-		t.Fatalf("%s holds %d entries after the read, want none (first %s)", dir, len(entries), entries[0].Name())
-	}
-}
-
-// cursorTurn is one prompt and reply for a Cursor CLI fixture session.
-type cursorTurn struct {
-	prompt, reply string
-	at            time.Time
-}
 
 // writeCursorCLISession adds a Cursor CLI session under home/chats: a
 // meta.json and a store.db whose blobs table holds the messages and whose
 // root blob lists them in order, the layout cursor-agent writes.
-func writeCursorCLISession(t *testing.T, home, cwd, id, name string, updated time.Time, turns ...cursorTurn) {
+func writeCursorCLISession(t *testing.T, home, cwd, id, name string, updated time.Time, turns ...fixtureTurn) {
 	t.Helper()
 	sum := md5.Sum([]byte(cwd))
 	dir := filepath.Join(home, "chats", hex.EncodeToString(sum[:]), id)
@@ -116,16 +70,16 @@ func cursorCLIFixture(t *testing.T) (*CursorCLI, string) {
 	home, wakeDir, tmp := t.TempDir(), t.TempDir(), t.TempDir()
 	day := func(d, h int) time.Time { return time.Date(2026, 9, d, h, 0, 0, 0, time.UTC) }
 	writeCursorCLISession(t, home, "/Users/matt/code/x", cursorCLI1, "Makefile cleanup", day(21, 10),
-		cursorTurn{"tidy the Makefile", "Removed the dead targets.", day(21, 9)},
-		cursorTurn{"now add a lint target", "Added make lint.", day(21, 9).Add(50 * time.Minute)})
+		fixtureTurn{"tidy the Makefile", "Removed the dead targets.", day(21, 9)},
+		fixtureTurn{"now add a lint target", "Added make lint.", day(21, 9).Add(50 * time.Minute)})
 	writeCursorCLISession(t, home, "/Users/matt/code/y", cursorCLI2, "", day(20, 10),
-		cursorTurn{"rename the config loader", "Renamed it to loadConfig.", day(20, 9)})
+		fixtureTurn{"rename the config loader", "Renamed it to loadConfig.", day(20, 9)})
 	writeCursorCLISession(t, home, "/Users/matt/code/x", cursorCLI3, "wake", day(21, 11),
-		cursorTurn{"check your tincan inbox", "Done.", day(21, 11)})
+		fixtureTurn{"check your tincan inbox", "Done.", day(21, 11)})
 	writeCursorCLISession(t, home, fixtureScratch+"/run-1", cursorCLI4, "", day(21, 12),
-		cursorTurn{"classify this question", "{}", day(21, 12)})
+		fixtureTurn{"classify this question", "{}", day(21, 12)})
 	writeCursorCLISession(t, home, "/Users/matt/code/x", cursorCLI5, "old", time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
-		cursorTurn{"an old question", "an old answer", time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)})
+		fixtureTurn{"an old question", "an old answer", time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)})
 	if err := os.WriteFile(filepath.Join(wakeDir, "cursor-cli.wake-sessions"), []byte("# Cursor CLI sessions started by the cursor-cli wake\n"+cursorCLI3+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +155,7 @@ func TestCursorCLILatestReadsTypedPromptsOnly(t *testing.T) {
 func TestCursorCLIReadsAChatOnlyInTheWAL(t *testing.T) {
 	home := t.TempDir()
 	writeCursorCLISession(t, home, "/Users/matt/code/w", cursorCLI1, "", time.Date(2026, 9, 21, 10, 0, 0, 0, time.UTC),
-		cursorTurn{"walonly prompt about the parser", "walonly reply", time.Date(2026, 9, 21, 9, 0, 0, 0, time.UTC)})
+		fixtureTurn{"walonly prompt about the parser", "walonly reply", time.Date(2026, 9, 21, 9, 0, 0, 0, time.UTC)})
 	stores, _ := filepath.Glob(filepath.Join(home, "chats", "*", cursorCLI1, "store.db"))
 	if len(stores) != 1 {
 		t.Fatalf("stores = %v", stores)
@@ -274,10 +228,10 @@ func TestNewCursorCLIHonorsConfigDir(t *testing.T) {
 	}
 }
 
-// cursorIDEFixtureComposer returns the statements that add one composer (an IDE chat) to the
-// cursorDiskKV table statements: composerData:<id> with its bubble
-// headers, and one bubbleId:<id>:<bubble> row per message.
-func cursorIDEFixtureComposer(id, name string, updated time.Time, turns ...cursorTurn) []string {
+// cursorIDEFixtureComposer returns the statements that add one composer
+// (an IDE chat) to the cursorDiskKV table: composerData:<id> with its
+// bubble headers, and one bubbleId:<id>:<bubble> row per message.
+func cursorIDEFixtureComposer(id, name string, updated time.Time, turns ...fixtureTurn) []string {
 	var headers []map[string]any
 	var stmts []string
 	for i, tr := range turns {
@@ -318,11 +272,11 @@ func cursorIDEFixture(t *testing.T) (*CursorIDE, string) {
 		"INSERT INTO cursorDiskKV VALUES ('composerData:empty-state-draft', '{\"_v\":18,\"composerId\":\"empty-state-draft\",\"fullConversationHeadersOnly\":[],\"isDraft\":true}')",
 	}
 	stmts = append(stmts, cursorIDEFixtureComposer(cursorIDE1, "Gemfile bump", day(21, 10),
-		cursorTurn{"bump the Gemfile", "Bumped rails.", day(21, 9)},
-		cursorTurn{"and run bundle", "Bundle installed.", day(21, 9).Add(30 * time.Minute)})...)
-	stmts = append(stmts, cursorIDEFixtureComposer(cursorIDE2, "", day(20, 10), cursorTurn{"explain the router", "It maps paths to handlers.", day(20, 9)})...)
-	stmts = append(stmts, cursorIDEFixtureComposer(cursorIDE3, "", day(21, 11), cursorTurn{"automated", "ok", day(21, 11)})...)
-	stmts = append(stmts, cursorIDEFixtureComposer(cursorIDE4, "", time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), cursorTurn{"old", "old", time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)})...)
+		fixtureTurn{"bump the Gemfile", "Bumped rails.", day(21, 9)},
+		fixtureTurn{"and run bundle", "Bundle installed.", day(21, 9).Add(30 * time.Minute)})...)
+	stmts = append(stmts, cursorIDEFixtureComposer(cursorIDE2, "", day(20, 10), fixtureTurn{"explain the router", "It maps paths to handlers.", day(20, 9)})...)
+	stmts = append(stmts, cursorIDEFixtureComposer(cursorIDE3, "", day(21, 11), fixtureTurn{"automated", "ok", day(21, 11)})...)
+	stmts = append(stmts, cursorIDEFixtureComposer(cursorIDE4, "", time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), fixtureTurn{"old", "old", time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)})...)
 	fixtureDB(t, filepath.Join(dir, "state.vscdb"), stmts...)
 	if err := os.WriteFile(filepath.Join(wakeDir, "cursor-ide.wake-sessions"), []byte(cursorIDE3+"\n"), 0o600); err != nil {
 		t.Fatal(err)

@@ -54,10 +54,11 @@ func NewGeminiCLI() *GeminiCLI {
 func (g *GeminiCLI) Source() Source { return SourceGeminiCLI }
 
 func (g *GeminiCLI) store() cliStore {
-	return cliStore{source: SourceGeminiCLI, wakeDir: g.WakeDir, scratchDir: g.ScratchDir, window: g.Window, now: g.Now}
+	return cliStore{source: SourceGeminiCLI, wakeDir: g.WakeDir, scratchDir: g.ScratchDir, window: g.Window, now: g.Now, sessions: fromCandidates(g.candidates)}
 }
 
-// candidates parses every main session file, newest first.
+// candidates replays every main session file for its metadata and time,
+// newest first.
 func (g *GeminiCLI) candidates(ctx context.Context) ([]cliSession, error) {
 	root := filepath.Join(g.Home, "tmp")
 	projects, err := os.ReadDir(root)
@@ -101,8 +102,15 @@ func (g *GeminiCLI) candidates(ctx context.Context) ([]cliSession, error) {
 					e.updated = st.ModTime()
 				}
 			}
-			turns := log.turns()
-			e.load = func() ([]turn, string, error) { return turns, "", nil }
+			// The replay above is needed for the order; the turns are
+			// built only for the sessions that are read.
+			e.load = func() ([]turn, string, error) {
+				log, err := readGeminiLog(path)
+				if err != nil {
+					return nil, "", err
+				}
+				return log.turns(), "", nil
+			}
 			// A session resumed from a legacy .json is rewritten as .jsonl;
 			// keep the newer copy.
 			if old, ok := byID[e.id]; !ok || e.updated.After(old.updated) {
@@ -363,24 +371,10 @@ func geminiText(raw json.RawMessage) string {
 
 // List implements Reader.
 func (g *GeminiCLI) List(ctx context.Context, count int, opts Options) (Page, error) {
-	if err := checkListCount(count); err != nil {
-		return Page{}, err
-	}
-	cands, err := g.candidates(ctx)
-	if err != nil {
-		return Page{}, err
-	}
-	return g.store().list(ctx, cands, count, opts)
+	return g.store().List(ctx, count, opts)
 }
 
 // Read implements Reader.
 func (g *GeminiCLI) Read(ctx context.Context, q Query, opts Options) (Page, error) {
-	if err := readCLI(SourceGeminiCLI, q); err != nil {
-		return Page{}, err
-	}
-	cands, err := g.candidates(ctx)
-	if err != nil {
-		return Page{}, err
-	}
-	return g.store().read(ctx, cands, q, opts)
+	return g.store().Read(ctx, q, opts)
 }

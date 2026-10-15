@@ -34,7 +34,7 @@ func openCodeFixture(t *testing.T) (*OpenCode, string) {
 		"CREATE TABLE `part` (`id` text PRIMARY KEY, `message_id` text NOT NULL, `session_id` text NOT NULL, `time_created` integer NOT NULL, `time_updated` integer NOT NULL, `data` text NOT NULL)",
 	}
 	n := 0
-	session := func(id, parent, dir, title string, updated time.Time, turns ...cursorTurn) {
+	session := func(id, parent, dir, title string, updated time.Time, turns ...fixtureTurn) {
 		p := "NULL"
 		if parent != "" {
 			p = sqlQuote(parent)
@@ -64,14 +64,14 @@ func openCodeFixture(t *testing.T) (*OpenCode, string) {
 	}
 	day := func(d, h int) time.Time { return time.Date(2026, 9, d, h, 0, 0, 0, time.UTC) }
 	session(openCode1, "", "/Users/matt/code/x", "Opencode config", day(21, 10),
-		cursorTurn{"where does opencode keep its config", "In opencode.json.", day(21, 9)},
-		cursorTurn{"and the agents", "Under .opencode/agent.", day(21, 9).Add(45 * time.Minute)})
+		fixtureTurn{"where does opencode keep its config", "In opencode.json.", day(21, 9)},
+		fixtureTurn{"and the agents", "Under .opencode/agent.", day(21, 9).Add(45 * time.Minute)})
 	session(openCode2, "", "/Users/matt/code/y", "New session - 2026-09-20T09:00:00.000Z", day(20, 10),
-		cursorTurn{"draft the release notes", "Drafted them.", day(20, 9)})
-	session(openCode3, "", "/Users/matt/code/x", "wake", day(21, 11), cursorTurn{"check your tincan inbox", "Done.", day(21, 11)})
-	session(openCode4, "", fixtureScratch+"/run-1", "", day(21, 12), cursorTurn{"classify this question", "{}", day(21, 12)})
-	session(openCode5, "", "/Users/matt/code/x", "old", time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), cursorTurn{"old", "old", time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)})
-	session(openCode6, openCode1, "/Users/matt/code/x", "subtask", day(21, 13), cursorTurn{"explore the repo", "Explored.", day(21, 13)})
+		fixtureTurn{"draft the release notes", "Drafted them.", day(20, 9)})
+	session(openCode3, "", "/Users/matt/code/x", "wake", day(21, 11), fixtureTurn{"check your tincan inbox", "Done.", day(21, 11)})
+	session(openCode4, "", fixtureScratch+"/run-1", "", day(21, 12), fixtureTurn{"classify this question", "{}", day(21, 12)})
+	session(openCode5, "", "/Users/matt/code/x", "old", time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), fixtureTurn{"old", "old", time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)})
+	session(openCode6, openCode1, "/Users/matt/code/x", "subtask", day(21, 13), fixtureTurn{"explore the repo", "Explored.", day(21, 13)})
 	db := filepath.Join(dataDir, "opencode.db")
 	fixtureDB(t, db, stmts...)
 	if err := os.WriteFile(filepath.Join(wakeDir, "opencode.wake-sessions"), []byte(openCode3+"\n"), 0o600); err != nil {

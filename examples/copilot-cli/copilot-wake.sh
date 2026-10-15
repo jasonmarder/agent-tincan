@@ -52,12 +52,6 @@
 set -eu
 
 : "${TINCAN_CONFIG:=$HOME/.config/tincan/copilot-cli.json}"
-# shellcheck disable=SC2088 # a literal ~/ prefix, which tincan expands
-case $TINCAN_CONFIG in "~/"*) TINCAN_CONFIG=$HOME/${TINCAN_CONFIG#"~/"} ;; esac
-# The run is started from the workdir, so every path the wake keeps is
-# made absolute first.
-case $TINCAN_CONFIG in /*) ;; *) TINCAN_CONFIG=$(pwd -P)/$TINCAN_CONFIG ;; esac
-export TINCAN_CONFIG
 
 # The library sits next to this script, or in the repo's examples/lib.
 here=$(dirname -- "$0")
@@ -72,19 +66,19 @@ fi
 # shellcheck source=SCRIPTDIR/../lib/tincan-wake-lib.sh
 . "$TINCAN_WAKE_LIB"
 
-cfg_dir=$(dirname -- "$TINCAN_CONFIG")
-cfg_name=$(basename -- "$TINCAN_CONFIG" .json)
-WAKE_HOME=${TINCAN_COPILOT_WAKE_HOME:-$cfg_dir/$cfg_name.wake}
+# The run is started from the workdir, so every path the wake keeps is
+# made absolute first.
+TINCAN_CONFIG=$(tincan_wake_config_path "$TINCAN_CONFIG")
+export TINCAN_CONFIG
+
+WAKE_HOME=${TINCAN_COPILOT_WAKE_HOME:-$(tincan_wake_beside_config "$TINCAN_CONFIG" .wake)}
 WAKE_HOME=${WAKE_HOME%/}
 COPILOT_HOME_DIR=$WAKE_HOME/.copilot
 WORKDIR=${TINCAN_COPILOT_WORKDIR:-$WAKE_HOME/work}
-SESSIONS=$cfg_dir/$cfg_name.wake-sessions
+SESSIONS=$(tincan_wake_beside_config "$TINCAN_CONFIG" .wake-sessions)
 BIN=${COPILOT_BIN:-copilot}
 VERSION_PATTERN=${TINCAN_COPILOT_VERSION_PATTERN:-^GitHub Copilot CLI [0-9]+[.][0-9]+[.][0-9]+}
-# The Agent Tincan tools (internal/mcpserver), the only ones a run may use.
-TINCAN_TOOLS="ask get_reply check_inbox claim progress reply answer cancel list_agents onboard get_attachment trace search"
-
-: "${TINCAN_WAKE_STATE_DIR:=$cfg_dir/$cfg_name.wake-state}"
+: "${TINCAN_WAKE_STATE_DIR:=$(tincan_wake_beside_config "$TINCAN_CONFIG" .wake-state)}"
 case $TINCAN_WAKE_STATE_DIR in /*) ;; *) TINCAN_WAKE_STATE_DIR=$(pwd -P)/$TINCAN_WAKE_STATE_DIR ;; esac
 
 tincan_wake_init copilot-cli
@@ -111,16 +105,12 @@ fi
 
 # The agent-tincan server, written before every run to the wake's private
 # state directory.
-tincan_path=$(command -v "${TINCAN_BIN:-tincan}" 2>/dev/null) || tincan_wake_refuse "${TINCAN_BIN:-tincan} is not installed or not on PATH"
-case $tincan_path in /*) ;; *) tincan_wake_refuse "${TINCAN_BIN:-tincan} is not a program on PATH; set TINCAN_BIN to the tincan binary's path" ;; esac
+tincan_wake_resolve_tincan
 state=$(CDPATH='' cd -P -- "$TINCAN_WAKE_STATE_DIR" && pwd -P)
 MCP_CONFIG=$state/mcp-config.json
-if ! printf '{"mcpServers":{"agent-tincan":{"type":"local","command":%s,"args":["mcp"],"env":{"TINCAN_CONFIG":%s},"tools":["*"]}}}\n' \
-  "$(tincan_wake_json_string "$tincan_path")" "$(tincan_wake_json_string "$TINCAN_CONFIG")" >"$MCP_CONFIG.$$" ||
-  ! mv -f "$MCP_CONFIG.$$" "$MCP_CONFIG"; then
-  rm -f "$MCP_CONFIG.$$"
-  tincan_wake_refuse "cannot write $MCP_CONFIG"
-fi
+tincan_wake_write_file "$MCP_CONFIG" <<EOF
+{"mcpServers":{"agent-tincan":{"type":"local","command":$(tincan_wake_json_string "$tincan_wake_tincan"),"args":["mcp"],"env":{"TINCAN_CONFIG":$(tincan_wake_json_string "$TINCAN_CONFIG")},"tools":["*"]}}}
+EOF
 
 # Copilot loads the wake home's mcp-config.json and the wake's file.
 # shellcheck disable=SC2329 # run by tincan_wake_check_identity
@@ -137,7 +127,7 @@ tincan_wake_record_session "$SESSIONS" "$workdir_c" "$SID"
 PROMPT="You have ${TINCAN_WAITING:-some} Agent Tincan item(s) waiting: requests from teammates, or replies to requests you sent. Call check_inbox. It shows replies to your requests first, with what you asked: finish the work that was waiting on each one. Then, for each request, handle it the way you would handle a request from your owner, and call reply with that request's id and your result. Call check_inbox again and keep going until it returns nothing waiting, so this run drains the whole inbox. If you need something from a teammate yourself, call ask; it may return before the answer does, and you do not have to wait for it: you will be woken again when the reply arrives. In this run you can read files in your working directory and use the Agent Tincan tools, nothing else; if a request needs more (editing files, running commands), say so in your reply."
 
 set -- "$BIN" -p "$PROMPT" -s --disable-builtin-mcps --additional-mcp-config "@$MCP_CONFIG" --session-id "$SID"
-for tool in $TINCAN_TOOLS; do
+for tool in $tincan_wake_tools; do
   set -- "$@" --allow-tool "$tincan_wake_server($tool)"
 done
 

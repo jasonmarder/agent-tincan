@@ -760,3 +760,45 @@ tincan_wake_json_tool() {
   esac
   return 0
 }
+
+# tincan_wake_tools lists the Agent Tincan tools (internal/mcpserver), the
+# only ones a wake that allowlists tools lets a run use.
+# shellcheck disable=SC2034 # read by the wake scripts
+tincan_wake_tools="ask get_reply check_inbox claim progress reply answer cancel list_agents onboard get_attachment trace search"
+
+# tincan_wake_config_path CONFIG prints CONFIG with a leading ~/ expanded
+# (as tincan does) and made absolute against the current directory, for a
+# wake that starts its run from another directory.
+tincan_wake_config_path() {
+  _tw_cp=$1
+  # shellcheck disable=SC2088 # a literal ~/ prefix, which tincan expands
+  case $_tw_cp in "~/"*) _tw_cp=$HOME/${_tw_cp#"~/"} ;; esac
+  case $_tw_cp in /*) ;; *) _tw_cp=$(pwd -P)/$_tw_cp ;; esac
+  printf '%s\n' "$_tw_cp"
+}
+
+# tincan_wake_beside_config CONFIG SUFFIX prints <dir>/<name>SUFFIX, where
+# <dir> is CONFIG's directory and <name> its file name without .json: the
+# wake's files kept beside the teammate's config (.wake-sessions, the list
+# tincan_wake_record_session writes; .wake, a wake home; .wake-state).
+tincan_wake_beside_config() {
+  printf '%s\n' "$(dirname -- "$1")/$(basename -- "$1" .json)$2"
+}
+
+# tincan_wake_resolve_tincan sets tincan_wake_tincan to the absolute path of
+# the tincan binary (TINCAN_BIN, else tincan, on PATH), for an MCP config
+# the wake writes. It refuses to wake when tincan is missing, or when the
+# name is not a program (a shell function or alias, say).
+tincan_wake_resolve_tincan() {
+  tincan_wake_tincan=$(command -v "${TINCAN_BIN:-tincan}" 2>/dev/null) || tincan_wake_refuse "${TINCAN_BIN:-tincan} is not installed or not on PATH"
+  case $tincan_wake_tincan in /*) ;; *) tincan_wake_refuse "${TINCAN_BIN:-tincan} is not a program on PATH; set TINCAN_BIN to the tincan binary's path" ;; esac
+}
+
+# tincan_wake_write_file FILE writes stdin to FILE through a temporary file
+# beside it, and refuses to wake when it cannot.
+tincan_wake_write_file() {
+  if ! { cat >"$1.$$" && mv -f "$1.$$" "$1"; } 2>/dev/null; then
+    rm -f "$1.$$"
+    tincan_wake_refuse "cannot write $1"
+  fi
+}
