@@ -92,7 +92,10 @@ func openCodeCandidates(ctx context.Context, db *sql.DB) ([]cliSession, error) {
 // openCodeTurns reads one session's messages and their text parts in
 // order.
 func openCodeTurns(ctx context.Context, db *sql.DB, id string, updated time.Time) ([]turn, string, error) {
-	rows, err := db.QueryContext(ctx, `SELECT m.id, m.time_created, m.data, p.data FROM message m LEFT JOIN part p ON p.message_id = m.id
+	// Only text parts are joined, so tool output never leaves SQLite; a
+	// message with no text part still comes back, with a NULL part.
+	rows, err := db.QueryContext(ctx, `SELECT m.id, m.time_created, m.data, p.data FROM message m
+		LEFT JOIN part p ON p.message_id = m.id AND json_extract(p.data, '$.type') = 'text'
 		WHERE m.session_id = ? ORDER BY m.time_created, m.id, p.id`, id)
 	if err != nil {
 		return nil, "", err

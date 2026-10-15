@@ -219,9 +219,8 @@ B3. Give yourself the tools. Add `tincan mcp` as an MCP server in your app:
                      steps in your onboard block (B4) and docs/adapters/grok-cli.md.
     - GitHub Copilot CLI (copilot-cli teammate) and Cursor CLI (cursor-cli teammate):
                      no MCP step. Their wake scripts write the agent-tincan server
-                     before every run; do not add it to ~/.copilot or ~/.cursor/mcp.json
-                     (the cursor-cli wake refuses to run while ~/.cursor/mcp.json names
-                     other servers). Follow your onboard block (B4) and
+                     before every run into a config folder of their own, so there is
+                     nothing to add to ~/.copilot or ~/.cursor. Follow your onboard block (B4) and
                      docs/adapters/copilot-cli.md or docs/adapters/cursor-cli.md.
     - Hermes:        hermes mcp add agent-tincan --command tincan --args mcp ; hermes gateway restart
     - OpenClaw:      openclaw mcp add agent-tincan --command tincan --arg mcp

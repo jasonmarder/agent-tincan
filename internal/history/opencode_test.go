@@ -19,6 +19,8 @@ const (
 	openCode4 = "ses_0c0d00000000000000000004" // history's own scratch run
 	openCode5 = "ses_0c0d00000000000000000005" // forty days old
 	openCode6 = "ses_0c0d00000000000000000006" // a subagent task under 1
+	openCode7 = "ses_0c0d00000000000000000007" // wake run in a recorded workdir, id not recorded
+	openCode8 = "ses_0c0d00000000000000000008" // wake run under a <name>.wake home, id not recorded
 )
 
 // openCodeFixture builds an opencode.db in the layout OpenCode 1.x
@@ -68,13 +70,23 @@ func openCodeFixture(t *testing.T) (*OpenCode, string) {
 		fixtureTurn{"and the agents", "Under .opencode/agent.", day(21, 9).Add(45 * time.Minute)})
 	session(openCode2, "", "/Users/matt/code/y", "New session - 2026-09-20T09:00:00.000Z", day(20, 10),
 		fixtureTurn{"draft the release notes", "Drafted them.", day(20, 9)})
+	// A large tool part on an owner message: the read must skip it.
+	n++
+	big, _ := json.Marshal(map[string]any{"type": "tool", "tool": "read", "state": map[string]any{"output": strings.Repeat("x", 1<<20)}})
+	stmts = append(stmts,
+		fmt.Sprintf("INSERT INTO message VALUES ('msg_big', %s, %d, %d, '{\"role\":\"assistant\"}')", sqlQuote(openCode2), day(20, 9).Add(3*time.Second).UnixMilli(), day(20, 9).Add(3*time.Second).UnixMilli()),
+		fmt.Sprintf("INSERT INTO part VALUES ('prt_big', 'msg_big', %s, 0, 0, %s)", sqlQuote(openCode2), sqlQuote(string(big))))
 	session(openCode3, "", "/Users/matt/code/x", "wake", day(21, 11), fixtureTurn{"check your tincan inbox", "Done.", day(21, 11)})
 	session(openCode4, "", fixtureScratch+"/run-1", "", day(21, 12), fixtureTurn{"classify this question", "{}", day(21, 12)})
 	session(openCode5, "", "/Users/matt/code/x", "old", time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), fixtureTurn{"old", "old", time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)})
 	session(openCode6, openCode1, "/Users/matt/code/x", "subtask", day(21, 13), fixtureTurn{"explore the repo", "Explored.", day(21, 13)})
+	session(openCode7, "", "/Users/matt/code/wakework/sub", "", day(21, 14), fixtureTurn{"check your tincan inbox", "Done.", day(21, 14)})
+	wakeHome := filepath.Join(wakeDir, "opencode-helper.wake")
+	mkdirs(t, wakeHome)
+	session(openCode8, "", filepath.Join(wakeHome, "proj"), "", day(21, 15), fixtureTurn{"check your tincan inbox", "Done.", day(21, 15)})
 	db := filepath.Join(dataDir, "opencode.db")
 	fixtureDB(t, db, stmts...)
-	if err := os.WriteFile(filepath.Join(wakeDir, "opencode.wake-sessions"), []byte(openCode3+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(wakeDir, "opencode.wake-sessions"), []byte(openCode3+"\nworkdir /Users/matt/code/wakework\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return &OpenCode{DB: db, WakeDir: wakeDir, ScratchDir: fixtureScratch, TempDir: tmp, Now: func() time.Time { return fixtureNow }}, tmp
@@ -93,8 +105,15 @@ func TestOpenCodeListNewestFirstWithoutWakeScratchOrSubagentRuns(t *testing.T) {
 		t.Fatalf("first = %+v", c)
 	}
 	page, err = r.List(context.Background(), 20, Options{All: true})
-	if err != nil || ids(page.Conversations) != openCode6+","+openCode3+","+openCode1+","+openCode2 || !page.Conversations[0].Automated || !page.Conversations[1].Automated {
+	if err != nil || ids(page.Conversations) != openCode8+","+openCode7+","+openCode6+","+openCode3+","+openCode1+","+openCode2 {
 		t.Fatalf("list --all = %s %+v, %v", ids(page.Conversations), page.Conversations, err)
+	}
+	// 8 and 7 are wake runs by working directory alone (a <name>.wake home,
+	// a recorded workdir line); 6 is a subagent; 3 has its id recorded.
+	for i, c := range page.Conversations[:4] {
+		if !c.Automated {
+			t.Fatalf("list --all [%d] %s not automated", i, c.ID)
+		}
 	}
 	emptyDir(t, tmp)
 }

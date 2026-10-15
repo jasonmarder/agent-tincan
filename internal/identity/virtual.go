@@ -42,6 +42,10 @@ func (d *Directory) BindVirtual(ctx context.Context, name string, replace bool) 
 	if !nameRE.MatchString(name) {
 		return ErrUnknownAgent
 	}
+	// Hold the join lock so an invite redeemed for this name cannot land
+	// between the check below and the write.
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	prev, ok, err := d.Agent(ctx, name)
 	if err != nil {
 		return err

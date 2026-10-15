@@ -11,16 +11,20 @@
 #   TINCAN_CONFIG=~/.config/tincan/cursor-cli.json tincan listen --exec ~/bin/cursor-wake.sh
 #
 # cursor-agent runs with the owner's own login, in a workspace of its own
-# (<wake home>/work). Before every run the wake rewrites the workspace's
-# .cursor/mcp.json, holding only the agent-tincan server with this
-# teammate's TINCAN_CONFIG, and its .cursor/cli.json, which permits
-# exactly the Agent Tincan tools (Mcp(agent-tincan:<tool>)). The run gets
-# --approve-mcps and --trust so the workspace server loads in -p mode, and
-# never --force or --yolo: any other tool call needs a permission the run
-# does not have. Cursor also loads the owner's ~/.cursor/mcp.json, and
-# --approve-mcps approves every server there, so any server in it stops
-# the wake unless TINCAN_WAKE_ALLOWED_SERVERS lists it. A hooks.json in the
-# workspace stops it too.
+# (<wake home>/work), with CURSOR_CONFIG_DIR set to a private config
+# directory in the wake home (<wake home>/.cursor), so the owner's
+# ~/.cursor (its cli-config.json allow entries, mcp.json servers and
+# hooks) never applies to a wake run. Cursor keeps the wake's chats there
+# too. Before every run the wake rewrites the workspace's .cursor/mcp.json,
+# holding only the agent-tincan server with this teammate's TINCAN_CONFIG,
+# and its .cursor/cli.json, which permits exactly the Agent Tincan tools
+# (Mcp(agent-tincan:<tool>)). The run gets --approve-mcps and --trust so
+# the workspace server loads in -p mode, and never --force or --yolo: any
+# other tool call needs a permission the run does not have. --approve-mcps
+# also approves every server in the private config directory's mcp.json,
+# so any server there stops the wake unless TINCAN_WAKE_ALLOWED_SERVERS
+# lists it. A hooks.json in the workspace or the private config directory
+# stops it too.
 #
 # Hangs are handled by the library's run timeout (TINCAN_WAKE_TIMEOUT).
 #
@@ -34,7 +38,7 @@
 #   TINCAN_CONFIG                 this teammate's tincan config (default
 #                                 ~/.config/tincan/cursor-cli.json)
 #   TINCAN_CURSOR_WAKE_HOME       the wake home (default <name>.wake beside
-#                                 TINCAN_CONFIG)
+#                                 TINCAN_CONFIG); never the owner's home
 #   TINCAN_CURSOR_WORKDIR         the workspace cursor-agent runs in
 #                                 (default <wake home>/work)
 #   TINCAN_CURSOR_VERSION_PATTERN what "cursor-agent --version" must print
@@ -70,6 +74,7 @@ export TINCAN_CONFIG
 WAKE_HOME=${TINCAN_CURSOR_WAKE_HOME:-$(tincan_wake_beside_config "$TINCAN_CONFIG" .wake)}
 WAKE_HOME=${WAKE_HOME%/}
 WORKDIR=${TINCAN_CURSOR_WORKDIR:-$WAKE_HOME/work}
+CONFIG_DIR=$WAKE_HOME/.cursor
 SESSIONS=$(tincan_wake_beside_config "$TINCAN_CONFIG" .wake-sessions)
 BIN=${CURSOR_AGENT_BIN:-cursor-agent}
 # cursor-agent prints its build, 2026.10.14-0f9edde. (Braces cannot sit
@@ -82,10 +87,20 @@ case $TINCAN_WAKE_STATE_DIR in /*) ;; *) TINCAN_WAKE_STATE_DIR=$(pwd -P)/$TINCAN
 tincan_wake_init cursor-cli
 tincan_wake_begin
 
-if ! { mkdir -p "$WORKDIR/.cursor" && chmod 700 "$WAKE_HOME"; } 2>/dev/null ||
-  ! workdir_c=$(tincan_wake_canonical_dir "$WORKDIR"); then
-  tincan_wake_refuse "cannot create the workdir $WORKDIR (set TINCAN_CURSOR_WORKDIR to an absolute path this user can write)"
+if ! { mkdir -p "$CONFIG_DIR" "$WORKDIR/.cursor" && chmod 700 "$WAKE_HOME" "$CONFIG_DIR"; } 2>/dev/null ||
+  ! workdir_c=$(tincan_wake_canonical_dir "$WORKDIR") ||
+  ! config_c=$(tincan_wake_canonical_dir "$CONFIG_DIR"); then
+  tincan_wake_refuse "cannot create the wake home $WAKE_HOME or the workdir $WORKDIR (set TINCAN_CURSOR_WAKE_HOME and TINCAN_CURSOR_WORKDIR to absolute paths this user can write)"
 fi
+if [ "$(tincan_wake_canonical_dir "$WAKE_HOME")" = "$(tincan_wake_canonical_dir "$HOME" || echo "$HOME")" ]; then
+  tincan_wake_refuse "the wake home $WAKE_HOME is the owner's home, whose ~/.cursor a wake must not use; set TINCAN_CURSOR_WAKE_HOME to a directory of its own"
+fi
+
+# Cursor's own config (cli-config.json, mcp.json, chats) comes from this
+# private directory, not the owner's ~/.cursor. The login is kept
+# elsewhere, so it still works.
+CURSOR_CONFIG_DIR=$config_c
+export CURSOR_CONFIG_DIR
 
 tincan_wake_check_binary "$BIN" "$VERSION_PATTERN"
 
@@ -94,10 +109,13 @@ if [ -z "$JSON_TOOL" ]; then
   tincan_wake_refuse "reading Cursor's MCP config needs jq or python3 on the listener's PATH (or TINCAN_CURSOR_JSON_TOOL names one that is missing)"
 fi
 
-# A workspace hook would run its commands unattended.
-if [ -e "$workdir_c/.cursor/hooks.json" ] || [ -L "$workdir_c/.cursor/hooks.json" ]; then
-  tincan_wake_refuse "found $workdir_c/.cursor/hooks.json; its hooks would run unattended in every wake, so remove it"
-fi
+# A hook in the workspace or the private config directory would run its
+# commands unattended.
+for hooks in "$workdir_c/.cursor/hooks.json" "$config_c/hooks.json"; do
+  if [ -e "$hooks" ] || [ -L "$hooks" ]; then
+    tincan_wake_refuse "found $hooks; its hooks would run unattended in every wake, so remove it"
+  fi
+done
 
 # The workspace's MCP config, rewritten before every run: only agent-tincan.
 tincan_wake_resolve_tincan
@@ -105,10 +123,15 @@ printf '{"mcpServers":{"agent-tincan":{"command":%s,"args":["mcp"],"env":{"TINCA
   "$(tincan_wake_json_string "$tincan_wake_tincan")" "$(tincan_wake_json_string "$TINCAN_CONFIG")" |
   tincan_wake_write_file "$workdir_c/.cursor/mcp.json"
 
-# Cursor loads the owner's ~/.cursor/mcp.json and the workspace's.
+# Cursor loads the private config directory's mcp.json and the
+# workspace's (one file when the workdir is the wake home).
 # shellcheck disable=SC2329 # run by tincan_wake_check_identity
 cursor_mcp_list() {
-  tincan_wake_mcp_json "$JSON_TOOL" "$HOME/.cursor/mcp.json" "$workdir_c/.cursor/mcp.json"
+  if [ "$config_c" = "$workdir_c/.cursor" ]; then
+    tincan_wake_mcp_json "$JSON_TOOL" "$workdir_c/.cursor/mcp.json"
+  else
+    tincan_wake_mcp_json "$JSON_TOOL" "$config_c/mcp.json" "$workdir_c/.cursor/mcp.json"
+  fi
 }
 tincan_wake_check_identity cursor_mcp_list
 

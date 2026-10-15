@@ -336,7 +336,7 @@ func TestCopilotAndCursorCLIBlocks(t *testing.T) {
 			"cursor-agent --version", "cursor-agent login", "CURSOR_API_KEY",
 			"examples/cursor-cli/cursor-wake.sh", "examples/lib/tincan-wake-lib.sh", "chmod +x ~/bin/cursor-wake.sh",
 			"TINCAN_CONFIG=~/.config/tincan/cursor-cli.json tincan listen --exec ~/bin/cursor-wake.sh",
-			"~/.cursor/mcp.json", "TINCAN_WAKE_ALLOWED_SERVERS", "TINCAN_WAKE_TIMEOUT",
+			"CURSOR_CONFIG_DIR", "hooks.json", "TINCAN_WAKE_TIMEOUT",
 			`method "command"`, "docs/adapters/cursor-cli.md",
 		}, []string{"--force", "--yolo"}},
 	}
@@ -545,7 +545,7 @@ func TestHistoryBlock(t *testing.T) {
 	if want := "TINCAN_CONFIG=~/.config/tincan/history.json tincan join <code> --relay " + relayURL; a.Join != want {
 		t.Errorf("history join = %q, want %q", a.Join, want)
 	}
-	for _, want := range []string{"service", "nothing to paste", "asked ChatGPT, claude.ai, Grok, Gemini, Copilot, Codex, Claude Code and Grok CLI"} {
+	for _, want := range []string{"service", "nothing to paste", "asked ChatGPT, claude.ai, Grok, Gemini, Copilot, Codex, Claude Code, Cursor (CLI and IDE), OpenCode, and the Gemini, Copilot and Grok CLIs"} {
 		if !strings.Contains(a.Instructions, want) {
 			t.Errorf("history instructions missing %q:\n%s", want, a.Instructions)
 		}
@@ -573,7 +573,7 @@ func TestHistoryBlock(t *testing.T) {
 		t.Errorf("history setup assumes a repo checkout:\n%s", setup)
 	}
 	r := recipe(t, k, "history")
-	if want := "History service for ChatGPT, claude.ai, Grok, Gemini, Copilot, Codex, Claude Code and Grok CLI chats"; r.Title != want {
+	if want := "History service for ChatGPT, claude.ai, Grok, Gemini, Copilot, Codex, Claude Code, Cursor, OpenCode and Gemini/Copilot/Grok CLI chats"; r.Title != want {
 		t.Errorf("history recipe title = %q, want %q", r.Title, want)
 	}
 	all := strings.Join(r.Steps, "\n")

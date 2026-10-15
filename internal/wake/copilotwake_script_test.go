@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/mvanhorn/agent-tincan/internal/mcpserver"
 )
 
 // These tests run examples/copilot-cli/copilot-wake.sh with a fake copilot
@@ -39,9 +41,37 @@ echo "${FAKE_STDOUT:-done}"
 exit "${FAKE_EXIT:-0}"
 `
 
-// tincanTools are the agent-tincan MCP server's tools
-// (internal/mcpserver), each of which a wake allows by name.
-var tincanTools = []string{"ask", "get_reply", "check_inbox", "claim", "progress", "reply", "answer", "cancel", "list_agents", "onboard", "get_attachment", "trace", "search"}
+// tincanAllowed returns the agent-tincan MCP server's tools
+// (mcpserver.ToolNames), each in a wake's allow syntax, sorted.
+func tincanAllowed(format func(tool string) string) []string {
+	var out []string
+	for _, tool := range mcpserver.ToolNames {
+		out = append(out, format(tool))
+	}
+	return slices.Sorted(slices.Values(out))
+}
+
+// The library's tincan_wake_tools, which every allowlisting wake permits,
+// is exactly the server's tools: a tool added to the server and not to the
+// library would be refused in every wake run.
+func TestWakeLibToolsMatchTheServer(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("tincan-wake-lib.sh is a POSIX sh library")
+	}
+	lib, err := filepath.Abs(filepath.Join("..", "..", "examples", "lib", "tincan-wake-lib.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("/bin/sh", "-c", `. "$1" && printf '%s\n' $tincan_wake_tools`, "sh", lib).Output()
+	if err != nil {
+		t.Fatalf("sourcing the library: %v", err)
+	}
+	got := slices.Sorted(slices.Values(strings.Fields(string(out))))
+	want := slices.Sorted(slices.Values(slices.Clone(mcpserver.ToolNames)))
+	if !slices.Equal(got, want) {
+		t.Fatalf("tincan_wake_tools = %q, want mcpserver.ToolNames %q", got, want)
+	}
+}
 
 // cliWake runs one command-wake script against fake binaries.
 type cliWake struct {
@@ -128,6 +158,55 @@ func (h *cliWake) runs() []wakeRun {
 func (h *cliWake) file(name string) string {
 	raw, _ := os.ReadFile(filepath.Join(h.argv, name))
 	return string(raw)
+}
+
+func (h *cliWake) backoff() bool {
+	_, err := os.Stat(filepath.Join(h.state, "backoff"))
+	return err == nil
+}
+
+func (h *cliWake) notices() int {
+	raw, _ := os.ReadFile(h.notice)
+	return strings.Count(string(raw), "\n")
+}
+
+// checkAuthBackoff runs the wake's auth-failure cases against its fake
+// CLI: an auth phrase on stderr with a failing exit backs off at once and
+// tells the operator once (and the next wake runs nothing); the same
+// phrase only on stdout (the model's words) does not; and a run the
+// timeout killed (124) never counts as an auth failure.
+func checkAuthBackoff(t *testing.T, newWake func(*testing.T) *cliWake, phrase string) {
+	t.Helper()
+	for _, tc := range []struct {
+		name    string
+		env     []string
+		backoff bool
+	}{
+		{"stderr auth failure", []string{"FAKE_EXIT=1", "FAKE_STDERR=" + phrase}, true},
+		{"phrase on stdout only", []string{"FAKE_EXIT=1", "FAKE_STDOUT=" + phrase}, false},
+		{"timeout exit", []string{"FAKE_EXIT=124", "FAKE_STDERR=" + phrase}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newWake(t)
+			r := h.run(tc.env...)
+			if r.err == nil || len(h.runs()) != 1 {
+				t.Fatalf("wake: err %v, runs %d, want one failed run\nstderr:\n%s", r.err, len(h.runs()), r.stderr)
+			}
+			if tc.backoff {
+				if !h.backoff() || h.notices() != 1 {
+					t.Fatalf("backoff %v, notices %d; want a backoff and one notice", h.backoff(), h.notices())
+				}
+				h.run()
+				if len(h.runs()) != 1 || h.notices() != 1 {
+					t.Fatalf("ran or notified again while backing off: runs %d, notices %d", len(h.runs()), h.notices())
+				}
+				return
+			}
+			if h.backoff() || h.notices() != 0 {
+				t.Fatalf("backoff %v, notices %d; want neither", h.backoff(), h.notices())
+			}
+		})
+	}
 }
 
 // refused checks that the wake ran nothing, failed, backed off and told
@@ -233,11 +312,8 @@ func TestCopilotWakeRunsHeadlessWithTincanToolsOnly(t *testing.T) {
 			t.Errorf("argv has %s: %q", f, a.argv)
 		}
 	}
-	var want []string
-	for _, tool := range tincanTools {
-		want = append(want, "agent-tincan("+tool+")")
-	}
-	if got := a.flagValues("--allow-tool"); !slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(want))) {
+	want := tincanAllowed(func(tool string) string { return "agent-tincan(" + tool + ")" })
+	if got := a.flagValues("--allow-tool"); !slices.Equal(slices.Sorted(slices.Values(got)), want) {
 		t.Errorf("--allow-tool = %q, want exactly %q", got, want)
 	}
 	if cfgs := a.flagValues("--additional-mcp-config"); len(cfgs) != 1 || !strings.HasPrefix(cfgs[0], "@/") {
@@ -277,4 +353,21 @@ func TestCopilotWakeIdentityCheck(t *testing.T) {
 			h.refused(h.run(), tc.want)
 		})
 	}
+}
+
+func TestCopilotWakeAuthFailureBacksOff(t *testing.T) {
+	checkAuthBackoff(t, newCopilotWake, "Error: not logged in. Run copilot login.")
+}
+
+// A wake home that is the owner's home, or a copilot whose --version is
+// not GitHub Copilot CLI's, is refused once, with a backoff.
+func TestCopilotWakeRefusals(t *testing.T) {
+	t.Run("wake home is the owner's home", func(t *testing.T) {
+		h := newCopilotWake(t)
+		h.refused(h.run("TINCAN_COPILOT_WAKE_HOME="+h.home), "is the owner's home")
+	})
+	t.Run("garbage version", func(t *testing.T) {
+		h := newCopilotWake(t)
+		h.refused(h.run("FAKE_VERSION=copilot 0.0.1-garbage"), "not the expected tool")
+	})
 }
